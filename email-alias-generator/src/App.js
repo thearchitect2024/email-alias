@@ -8,24 +8,170 @@ function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState('');
 
+  // Email regex pattern
+  const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+
   // Generate random alias email
   const generateAlias = (email) => {
     const localPart = email.split('@')[0];
     const firstChar = localPart.charAt(0).toLowerCase();
     const randomNum = Math.floor(Math.random() * 10000);
     const randomChars = Math.random().toString(36).substring(2, 5);
-    return `${firstChar}${randomNum}${randomChars}@cdnhyd.appen.com`;
+    return `${firstChar}${randomNum}${randomChars}@myapp.com`;
+  };
+
+  // Find column by name (case-insensitive, fuzzy)
+  const findColumn = (row, possibleNames) => {
+    const keys = Object.keys(row);
+    for (const key of keys) {
+      const lowerKey = key.toLowerCase().trim();
+      if (possibleNames.some(name => lowerKey.includes(name))) {
+        return row[key];
+      }
+    }
+    return null;
+  };
+
+  // Extract emails from any value using regex
+  const extractEmail = (value) => {
+    if (!value) return null;
+    const stringValue = String(value).trim();
+    if (emailRegex.test(stringValue)) return stringValue;
+    const emailMatch = stringValue.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+    return emailMatch ? emailMatch[0] : null;
+  };
+
+  // Process CSV with headers
+  const processWithHeaders = (results) => {
+    const data = results.data.filter(row => Object.values(row).some(val => val));
+
+    if (data.length === 0) {
+      setError('No valid data found in CSV');
+      setIsProcessing(false);
+      return;
+    }
+
+    const processed = [];
+    let emailsFound = 0;
+
+    data.forEach((row) => {
+      const firstName = findColumn(row, ['first', 'fname', 'firstname', 'given']) || '';
+      const lastName  = findColumn(row, ['last', 'lname', 'lastname', 'surname', 'family']) || '';
+
+      // Prefer known email columns first; fallback to scanning all cells
+      let email = findColumn(row, ['email', 'e-mail', 'mail', 'address']);
+      if (!email) {
+        for (const value of Object.values(row)) {
+          const extracted = extractEmail(value);
+          if (extracted) { email = extracted; break; }
+        }
+      } else {
+        email = extractEmail(email);
+      }
+
+      if (email) {
+        emailsFound++;
+        processed.push({
+          id: processed.length + 1,
+          firstName: firstName || '',
+          lastName: lastName || '',
+          originalEmail: email,
+          aliasEmail: generateAlias(email)
+        });
+      }
+    });
+
+    if (emailsFound === 0) {
+      setError('No valid email addresses found in the CSV file');
+      setIsProcessing(false);
+      return;
+    }
+
+    setUploadedData(data);
+    setProcessedData(processed);
+    setIsProcessing(false);
+  };
+
+  // Process CSV without headers
+  const processWithoutHeaders = (results) => {
+    const data = results.data.filter(row => row.some(val => val));
+
+    if (data.length === 0) {
+      setError('No valid data found in CSV');
+      setIsProcessing(false);
+      return;
+    }
+
+    const processed = [];
+    let emailsFound = 0;
+
+    data.forEach((row) => {
+      row.forEach((cell, cellIndex) => {
+        const email = extractEmail(cell);
+        if (!email) return;
+
+        emailsFound++;
+
+        // Heuristic: try to infer names from previous cells
+        let firstName = '';
+        let lastName = '';
+
+        if (cellIndex > 0 && !extractEmail(row[cellIndex - 1])) {
+          const prevCell = String(row[cellIndex - 1] || '').trim();
+          if (prevCell && prevCell.length < 50) {
+            if (cellIndex > 1 && !extractEmail(row[cellIndex - 2])) {
+              const prevPrevCell = String(row[cellIndex - 2] || '').trim();
+              if (prevPrevCell && prevPrevCell.length < 50) {
+                firstName = prevPrevCell;
+                lastName = prevCell;
+              } else {
+                const parts = prevCell.split(/\s+/);
+                if (parts.length >= 2) {
+                  firstName = parts[0];
+                  lastName = parts.slice(1).join(' ');
+                } else {
+                  firstName = prevCell;
+                }
+              }
+            } else {
+              const parts = prevCell.split(/\s+/);
+              if (parts.length >= 2) {
+                firstName = parts[0];
+                lastName = parts.slice(1).join(' ');
+              } else {
+                firstName = prevCell;
+              }
+            }
+          }
+        }
+
+        processed.push({
+          id: processed.length + 1,
+          firstName,
+          lastName,
+          originalEmail: email,
+          aliasEmail: generateAlias(email)
+        });
+      });
+    });
+
+    if (emailsFound === 0) {
+      setError('No valid email addresses found in the CSV file');
+      setIsProcessing(false);
+      return;
+    }
+
+    setUploadedData(data);
+    setProcessedData(processed);
+    setIsProcessing(false);
   };
 
   // Handle file upload
   const handleFileUpload = (event) => {
     const file = event.target.files[0];
     setError('');
-    
-    if (!file) {
-      return;
-    }
 
+    if (!file) return;
     if (!file.name.endsWith('.csv')) {
       setError('Please upload a CSV file');
       return;
@@ -33,49 +179,35 @@ function App() {
 
     setIsProcessing(true);
 
+    // First, try with headers; if header row looks like data (e.g., contains emails), re-parse without headers
     Papa.parse(file, {
       header: true,
+      skipEmptyLines: true,
       complete: (results) => {
         try {
-          // Validate CSV structure
-          const data = results.data.filter(row => 
-            row['first name'] || row['last name'] || row['email']
-          );
-
-          if (data.length === 0) {
-            setError('No valid data found in CSV');
-            setIsProcessing(false);
-            return;
+          const firstRow = results.data[0];
+          if (firstRow && Object.keys(firstRow).length > 0) {
+            const keysHaveEmail = Object.keys(firstRow).some(key => emailRegex.test(key));
+            if (keysHaveEmail) {
+              Papa.parse(file, {
+                header: false,
+                skipEmptyLines: true,
+                complete: (noHeaderResults) => processWithoutHeaders(noHeaderResults),
+                error: (err) => { setError('Error parsing CSV file: ' + err.message); setIsProcessing(false); }
+              });
+            } else {
+              processWithHeaders(results);
+            }
+          } else {
+            Papa.parse(file, {
+              header: false,
+              skipEmptyLines: true,
+              complete: (noHeaderResults) => processWithoutHeaders(noHeaderResults),
+              error: (err) => { setError('Error parsing CSV file: ' + err.message); setIsProcessing(false); }
+            });
           }
-
-          // Check for required columns
-          const firstRow = data[0];
-          const hasRequiredColumns = 
-            'first name' in firstRow && 
-            'last name' in firstRow && 
-            'email' in firstRow;
-
-          if (!hasRequiredColumns) {
-            setError('CSV must contain columns: first name, last name, email');
-            setIsProcessing(false);
-            return;
-          }
-
-          setUploadedData(data);
-
-          // Process data and generate aliases
-          const processed = data.map((row, index) => ({
-            id: index + 1,
-            firstName: row['first name'] || '',
-            lastName: row['last name'] || '',
-            originalEmail: row['email'] || '',
-            aliasEmail: row['email'] ? generateAlias(row['email']) : ''
-          }));
-
-          setProcessedData(processed);
-          setIsProcessing(false);
         } catch (err) {
-          setError('Error processing CSV file');
+          setError('Error processing CSV file: ' + err.message);
           setIsProcessing(false);
         }
       },
@@ -99,11 +231,11 @@ function App() {
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
-    
+
     link.setAttribute('href', url);
     link.setAttribute('download', 'email_aliases.csv');
     link.style.visibility = 'hidden';
-    
+
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -114,11 +246,8 @@ function App() {
     setUploadedData([]);
     setProcessedData([]);
     setError('');
-    // Reset file input
     const fileInput = document.getElementById('csv-upload');
-    if (fileInput) {
-      fileInput.value = '';
-    }
+    if (fileInput) fileInput.value = '';
   };
 
   return (
@@ -133,9 +262,9 @@ function App() {
           <div className="upload-card">
             <h2>Upload CSV File</h2>
             <p className="instructions">
-              Your CSV should contain columns: <strong>first name</strong>, <strong>last name</strong>, <strong>email</strong>
+              Upload any CSV containing email addresses. The app auto-detects headers or no-headers and finds emails in any column.
             </p>
-            
+
             <div className="file-input-wrapper">
               <input
                 type="file"
