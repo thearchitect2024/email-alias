@@ -17,10 +17,10 @@ function App() {
     const firstChar = localPart.charAt(0).toLowerCase();
     const randomNum = Math.floor(Math.random() * 10000);
     const randomChars = Math.random().toString(36).substring(2, 5);
-    return `${firstChar}${randomNum}${randomChars}@cdnhyd.appen.com`;
+    return `${firstChar}${randomNum}${randomChars}@myapp.com`;
   };
 
-  // Find column by name (case-insensitive)
+  // Find column by name (case-insensitive, fuzzy)
   const findColumn = (row, possibleNames) => {
     const keys = Object.keys(row);
     for (const key of keys) {
@@ -36,10 +36,7 @@ function App() {
   const extractEmail = (value) => {
     if (!value) return null;
     const stringValue = String(value).trim();
-    if (emailRegex.test(stringValue)) {
-      return stringValue;
-    }
-    // Try to find email within the string
+    if (emailRegex.test(stringValue)) return stringValue;
     const emailMatch = stringValue.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
     return emailMatch ? emailMatch[0] : null;
   };
@@ -47,7 +44,7 @@ function App() {
   // Process CSV with headers
   const processWithHeaders = (results) => {
     const data = results.data.filter(row => Object.values(row).some(val => val));
-    
+
     if (data.length === 0) {
       setError('No valid data found in CSV');
       setIsProcessing(false);
@@ -57,25 +54,18 @@ function App() {
     const processed = [];
     let emailsFound = 0;
 
-    data.forEach((row, index) => {
-      // Try to find first name, last name, and email columns (case-insensitive)
+    data.forEach((row) => {
       const firstName = findColumn(row, ['first', 'fname', 'firstname', 'given']) || '';
-      const lastName = findColumn(row, ['last', 'lname', 'lastname', 'surname', 'family']) || '';
-      
-      // Look for email in typical email columns first
+      const lastName  = findColumn(row, ['last', 'lname', 'lastname', 'surname', 'family']) || '';
+
+      // Prefer known email columns first; fallback to scanning all cells
       let email = findColumn(row, ['email', 'e-mail', 'mail', 'address']);
-      
-      // If no email column found, search all columns for email pattern
       if (!email) {
         for (const value of Object.values(row)) {
-          const extractedEmail = extractEmail(value);
-          if (extractedEmail) {
-            email = extractedEmail;
-            break;
-          }
+          const extracted = extractEmail(value);
+          if (extracted) { email = extracted; break; }
         }
       } else {
-        // Extract email from the found column
         email = extractEmail(email);
       }
 
@@ -97,6 +87,7 @@ function App() {
       return;
     }
 
+    setUploadedData(data);
     setProcessedData(processed);
     setIsProcessing(false);
   };
@@ -104,7 +95,7 @@ function App() {
   // Process CSV without headers
   const processWithoutHeaders = (results) => {
     const data = results.data.filter(row => row.some(val => val));
-    
+
     if (data.length === 0) {
       setError('No valid data found in CSV');
       setIsProcessing(false);
@@ -114,57 +105,53 @@ function App() {
     const processed = [];
     let emailsFound = 0;
 
-    data.forEach((row, rowIndex) => {
-      // Search each cell for email pattern
+    data.forEach((row) => {
       row.forEach((cell, cellIndex) => {
         const email = extractEmail(cell);
-        if (email) {
-          emailsFound++;
-          
-          // Try to guess first and last name from adjacent cells
-          let firstName = '';
-          let lastName = '';
-          
-          // Check if previous cells might contain names
-          if (cellIndex > 0 && !extractEmail(row[cellIndex - 1])) {
-            const prevCell = String(row[cellIndex - 1] || '').trim();
-            if (prevCell && prevCell.length < 50) { // Reasonable name length
-              if (cellIndex > 1 && !extractEmail(row[cellIndex - 2])) {
-                const prevPrevCell = String(row[cellIndex - 2] || '').trim();
-                if (prevPrevCell && prevPrevCell.length < 50) {
-                  firstName = prevPrevCell;
-                  lastName = prevCell;
-                } else {
-                  // Might be "FirstName LastName" in one cell
-                  const nameParts = prevCell.split(/\s+/);
-                  if (nameParts.length >= 2) {
-                    firstName = nameParts[0];
-                    lastName = nameParts.slice(1).join(' ');
-                  } else {
-                    firstName = prevCell;
-                  }
-                }
+        if (!email) return;
+
+        emailsFound++;
+
+        // Heuristic: try to infer names from previous cells
+        let firstName = '';
+        let lastName = '';
+
+        if (cellIndex > 0 && !extractEmail(row[cellIndex - 1])) {
+          const prevCell = String(row[cellIndex - 1] || '').trim();
+          if (prevCell && prevCell.length < 50) {
+            if (cellIndex > 1 && !extractEmail(row[cellIndex - 2])) {
+              const prevPrevCell = String(row[cellIndex - 2] || '').trim();
+              if (prevPrevCell && prevPrevCell.length < 50) {
+                firstName = prevPrevCell;
+                lastName = prevCell;
               } else {
-                // Only one cell before email, might be full name
-                const nameParts = prevCell.split(/\s+/);
-                if (nameParts.length >= 2) {
-                  firstName = nameParts[0];
-                  lastName = nameParts.slice(1).join(' ');
+                const parts = prevCell.split(/\s+/);
+                if (parts.length >= 2) {
+                  firstName = parts[0];
+                  lastName = parts.slice(1).join(' ');
                 } else {
                   firstName = prevCell;
                 }
               }
+            } else {
+              const parts = prevCell.split(/\s+/);
+              if (parts.length >= 2) {
+                firstName = parts[0];
+                lastName = parts.slice(1).join(' ');
+              } else {
+                firstName = prevCell;
+              }
             }
           }
-          
-          processed.push({
-            id: processed.length + 1,
-            firstName: firstName,
-            lastName: lastName,
-            originalEmail: email,
-            aliasEmail: generateAlias(email)
-          });
         }
+
+        processed.push({
+          id: processed.length + 1,
+          firstName,
+          lastName,
+          originalEmail: email,
+          aliasEmail: generateAlias(email)
+        });
       });
     });
 
@@ -174,6 +161,7 @@ function App() {
       return;
     }
 
+    setUploadedData(data);
     setProcessedData(processed);
     setIsProcessing(false);
   };
@@ -182,11 +170,8 @@ function App() {
   const handleFileUpload = (event) => {
     const file = event.target.files[0];
     setError('');
-    
-    if (!file) {
-      return;
-    }
 
+    if (!file) return;
     if (!file.name.endsWith('.csv')) {
       setError('Please upload a CSV file');
       return;
@@ -194,47 +179,31 @@ function App() {
 
     setIsProcessing(true);
 
-    // First, try to parse with headers
+    // First, try with headers; if header row looks like data (e.g., contains emails), re-parse without headers
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
       complete: (results) => {
         try {
-          // Check if the first row looks like headers or data
           const firstRow = results.data[0];
           if (firstRow && Object.keys(firstRow).length > 0) {
-            // Check if any key contains an email - if so, it's probably not a header
             const keysHaveEmail = Object.keys(firstRow).some(key => emailRegex.test(key));
-            
             if (keysHaveEmail) {
-              // Re-parse without headers
               Papa.parse(file, {
                 header: false,
                 skipEmptyLines: true,
-                complete: (results) => {
-                  processWithoutHeaders(results);
-                },
-                error: (err) => {
-                  setError('Error parsing CSV file: ' + err.message);
-                  setIsProcessing(false);
-                }
+                complete: (noHeaderResults) => processWithoutHeaders(noHeaderResults),
+                error: (err) => { setError('Error parsing CSV file: ' + err.message); setIsProcessing(false); }
               });
             } else {
-              // Process with headers
               processWithHeaders(results);
             }
           } else {
-            // Try without headers
             Papa.parse(file, {
               header: false,
               skipEmptyLines: true,
-              complete: (results) => {
-                processWithoutHeaders(results);
-              },
-              error: (err) => {
-                setError('Error parsing CSV file: ' + err.message);
-                setIsProcessing(false);
-              }
+              complete: (noHeaderResults) => processWithoutHeaders(noHeaderResults),
+              error: (err) => { setError('Error parsing CSV file: ' + err.message); setIsProcessing(false); }
             });
           }
         } catch (err) {
@@ -262,11 +231,11 @@ function App() {
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
-    
+
     link.setAttribute('href', url);
     link.setAttribute('download', 'email_aliases.csv');
     link.style.visibility = 'hidden';
-    
+
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -277,11 +246,8 @@ function App() {
     setUploadedData([]);
     setProcessedData([]);
     setError('');
-    // Reset file input
     const fileInput = document.getElementById('csv-upload');
-    if (fileInput) {
-      fileInput.value = '';
-    }
+    if (fileInput) fileInput.value = '';
   };
 
   return (
@@ -296,11 +262,9 @@ function App() {
           <div className="upload-card">
             <h2>Upload CSV File</h2>
             <p className="instructions">
-              Upload any CSV file containing email addresses. The app will automatically detect emails using pattern matching.
-              <br />
-              <strong>Supported formats:</strong> With or without headers, case-insensitive column names, emails in any column
+              Upload any CSV containing email addresses. The app auto-detects headers or no-headers and finds emails in any column.
             </p>
-            
+
             <div className="file-input-wrapper">
               <input
                 type="file"
